@@ -56,8 +56,14 @@ def ingest_and_configure():
     vessels_col.insert_many(vessel_docs)
     
     print("Configuring simulation events...")
+    df = df.sort_values(by='base_date_time')
+    
     event_docs = df[['mmsi', 'base_date_time', 'longitude', 'latitude', 'sog', 'cog']].to_dict('records')
     events_col.insert_many(event_docs)
+    
+    print("Creating indices for time-series playback...")
+    events_col.create_index([("base_date_time", 1)])
+    events_col.create_index([("mmsi", 1)])
     
     print("Injecting synthetic risks (Weather, War Zones)...")
     risks = [

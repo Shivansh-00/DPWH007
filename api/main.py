@@ -1,6 +1,11 @@
 import asyncio
 import os
 import random
+import math
+import pickle
+import pandas as pd
+from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
 from typing import List, Dict, Optional
 
 from dotenv import load_dotenv
@@ -11,19 +16,30 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-app = FastAPI(title="Port Docking Decision System API")
-
-# Add CORS Middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all for local dev
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 client = AsyncIOMotorClient(os.getenv("MONGO_URL"))
 db = client["port_simulation"]
+
+try:
+    with open("eta_model.pkl", "rb") as f:
+        pdds_model = pickle.load(f)
+except FileNotFoundError:
+    with open("../eta_model.pkl", "rb") as f:
+        pdds_model = pickle.load(f)
+
+PORT_LAT = 29.98
+PORT_LON = -90.0
+
+
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) * math.sin(dlat / 2) +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+         math.sin(dlon / 2) * math.sin(dlon / 2))
+    c = 2 * math.asin(math.sqrt(a))
+    return R * c
+
 
 STATE_APPROACHING = "APPROACHING"
 STATE_WAITING = "WAITING"
@@ -39,143 +55,208 @@ class Berth(BaseModel):
     status: str = "Empty"
 
 
+LAT_MIN, LAT_MAX = 24.0, 31.0
+LON_MIN, LON_MAX = -98.0, -80.0
+
+
+def map_to_pixels(lat, lon):
+    x = (lon - LON_MIN) / (LON_MAX - LON_MIN) * 800
+    y = (lat - LAT_MIN) / (LAT_MAX - LAT_MIN) * 600
+    return {"x": float(x), "y": 600 - float(y)}
+
+
 class SimulationContext:
     def __init__(self):
         self.berths: List[Berth] = []
         self.active_ships: Dict[int, dict] = {}
-        self.anchorage_queue: List[int] = []
-        self.port_channel: List[int] = []
         self.is_running = False
+        self.current_time = None
         self.ticks = 0
+        self.weather_center: Optional[Dict[str, float]] = None
+        self.weather_radius: float = 100.0
 
 
 sim_ctx = SimulationContext()
 
-
-@app.on_event("startup")
-async def startup_db_client():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
     sim_ctx.berths = [
         Berth(id=i, length=200 + random.randint(0, 200), width=30 + random.randint(0, 40))
-        for i in range(1, 6)
+        for i in range(1, 8)
     ]
+    yield
+    # Shutdown logic (could close DB here)
+
+app = FastAPI(title="Port Docking Decision System API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def sanitize_float(v, default=0.0):
+    """Ensure float is JSON compliant (no NaN/Inf)"""
+    try:
+        if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+            return default
+        return float(v)
+    except:
+        return default
 
 
 @app.get("/simulation/state")
 async def get_sim_state():
-    ret = {
-        "ticks": sim_ctx.ticks,
+    return {
+        "current_time": str(sim_ctx.current_time) if sim_ctx.current_time else "Not Started",
         "berths": sim_ctx.berths,
         "ships": list(sim_ctx.active_ships.values()),
-        "anchorage_count": len(sim_ctx.anchorage_queue),
-        "channel_count": len(sim_ctx.port_channel)
+        "bounds": {"lat": [LAT_MIN, LAT_MAX], "lon": [LON_MIN, LON_MAX]},
+        "weather": {"center": sim_ctx.weather_center, "radius": sim_ctx.weather_radius}
     }
-    for _ in range(len(ret["ships"])):
-        ret["ships"][_]["meta"].pop("_id", None)
-    print(ret)
-    return ret
+
+
+@app.post("/simulation/weather")
+async def update_weather(data: dict):
+    sim_ctx.weather_center = data.get("center")
+    sim_ctx.weather_radius = sanitize_float(data.get("radius", 100.0), 100.0)
+    return {"status": "updated"}
+
+
+@app.post("/port/berth")
+async def add_berth(berth: Berth):
+    sim_ctx.berths.append(berth)
+    return {"status": "added"}
+
+
+@app.delete("/port/berth/{id}")
+async def remove_berth(id: int):
+    sim_ctx.berths = [b for b in sim_ctx.berths if b.id != id]
+    return {"status": "removed"}
 
 
 @app.post("/start")
 async def start_simulation(background_tasks: BackgroundTasks):
     if not sim_ctx.is_running:
+        first_event = await db.sim_events.find_one(sort=[("base_date_time", 1)])
+        if first_event:
+            if isinstance(first_event["base_date_time"], str):
+                sim_ctx.current_time = datetime.fromisoformat(first_event["base_date_time"])
+            else:
+                sim_ctx.current_time = first_event["base_date_time"]
+
         sim_ctx.is_running = True
-        background_tasks.add_task(run_sim_loop)
-    return {"status": "started"}
+        background_tasks.add_task(run_playback_loop)
+    return {"status": "started", "time": str(sim_ctx.current_time)}
 
 
-async def get_priority_score(vessel_meta: dict, wait_time: int):
-    base = vessel_meta.get("priority", 5)
-    score = (base * 100) - (wait_time * 2)
-    return max(0, score)
+async def run_playback_loop():
+    print(f"PLAYBACK: Started from {sim_ctx.current_time}")
 
-
-async def control_entry_sequence():
-    """
-    Core Logic: Decide which ships from Anchorage enter the Port Channel.
-    """
-    if not sim_ctx.anchorage_queue:
-        return
-
-    candidates = []
-    for mmsi in sim_ctx.anchorage_queue:
-        ship = sim_ctx.active_ships[mmsi]
-        score = await get_priority_score(ship["meta"], ship["wait_ticks"])
-        candidates.append({"mmsi": mmsi, "score": score})
-
-    candidates.sort(key=lambda x: x["score"])
-
-    free_berths = sum(1 for b in sim_ctx.berths if b.occupied_by is None)
-    cleared_limit = free_berths + 2
-
-    if len(sim_ctx.port_channel) < cleared_limit:
-        best_mmsi = candidates[0]["mmsi"]
-        sim_ctx.anchorage_queue.remove(best_mmsi)
-        sim_ctx.port_channel.append(best_mmsi)
-        sim_ctx.active_ships[best_mmsi]["state"] = STATE_CLEARED
-        print(f"SHIP {best_mmsi} CLEARED FOR ENTRY (PRIORITY)")
-
-
-async def run_sim_loop():
-    print("ENTRY: Simulation Loop Started")
-    cursor = db.vessels.find({}).limit(50)
-    vessels = await cursor.to_list(length=50)
-
-    for v in vessels:
-        mmsi = v["mmsi"]
-        sim_ctx.active_ships[mmsi] = {
-            "mmsi": mmsi,
-            "meta": v,
-            "state": STATE_APPROACHING,
-            "pos": {"x": random.randint(0, 100), "y": random.randint(0, 800)},
-            "wait_ticks": 0
-        }
+    vessels_cursor = db.vessels.find({})
+    vessel_meta = {}
+    async for v in vessels_cursor:
+        v.pop("_id", None)  # Ensure non-serializable ObjectId is removed
+        vessel_meta[v["mmsi"]] = v
 
     while sim_ctx.is_running:
-        sim_ctx.ticks += 1
+        window_start = sim_ctx.current_time
+        window_end = window_start + timedelta(minutes=15)
 
+        cursor = db.sim_events.find({
+            "base_date_time": {"$gte": window_start, "$lt": window_end}
+        }).sort("base_date_time", 1)
+
+        events = await cursor.to_list(length=1000)
+        seen_this_tick = set()
+        for event in events:
+            mmsi = event["mmsi"]
+            seen_this_tick.add(mmsi)
+
+            lat = sanitize_float(event.get("latitude"), PORT_LAT)
+            lon = sanitize_float(event.get("longitude"), PORT_LON)
+            pos = map_to_pixels(lat, lon)
+            dist_to_port = sanitize_float(haversine(lat, lon, PORT_LAT, PORT_LON))
+
+            sog = sanitize_float(event.get("sog"), 0.0)
+            cog = sanitize_float(event.get("cog"), 0.0)
+            
+            in_storm = False
+            if sim_ctx.weather_center:
+                dx = pos["x"] - sim_ctx.weather_center["x"]
+                dy = pos["y"] - sim_ctx.weather_center["y"]
+                d_px = (dx ** 2 + dy ** 2) ** 0.5
+                if d_px < sim_ctx.weather_radius:
+                    sog *= 0.2
+                    in_storm = True
+
+            # New model features: distance_to_port, effective_speed, inv_speed
+            inv_speed = 1.0 / (sog + 0.1)
+            features_df = pd.DataFrame([[dist_to_port, sog, inv_speed]], 
+                                     columns=['distance_to_port', 'effective_speed', 'inv_speed'])
+            
+            try:
+                ai_eta = sanitize_float(float(pdds_model.predict(features_df)[0]))
+            except:
+                ai_eta = 0.0
+
+            state = STATE_APPROACHING
+            if dist_to_port < 5.0 and sog > 1.0:
+                state = STATE_WAITING
+            elif dist_to_port < 1.0 and sog < 1.0:
+                state = STATE_DOCKED
+
+            if mmsi not in sim_ctx.active_ships:
+                sim_ctx.active_ships[mmsi] = {
+                    "mmsi": mmsi,
+                    "meta": vessel_meta.get(mmsi, {"vessel_name": "Unknown", "priority": 3}),
+                    "docked_ticks": 0
+                }
+
+            ship = sim_ctx.active_ships[mmsi]
+            ship.update({
+                "state": state,
+                "pos": pos,
+                "lat": lat,
+                "lon": lon,
+                "sog": sog,
+                "ai_eta": ai_eta,
+                "in_storm": in_storm,
+                "last_seen": sim_ctx.current_time,
+                "timestamp": str(event["base_date_time"])
+            })
+
+        mmsis_to_remove = []
         for mmsi, ship in sim_ctx.active_ships.items():
-            if ship["state"] == STATE_APPROACHING:
-                ship["pos"]["x"] += 5
-                if ship["pos"]["x"] > 200:
-                    ship["state"] = STATE_WAITING
-                    sim_ctx.anchorage_queue.append(mmsi)
+            time_since_seen = (sim_ctx.current_time - ship["last_seen"]).total_seconds()
+            if time_since_seen > 7200:
+                mmsis_to_remove.append(mmsi)
+                continue
 
-            elif ship["state"] == STATE_WAITING:
-                ship["wait_ticks"] += 1
+            ship_lat, ship_lon = ship.get("lat"), ship.get("lon")
+            if ship_lat and (ship_lat < LAT_MIN or ship_lat > LAT_MAX or ship_lon < LON_MIN or ship_lon > LON_MAX):
+                mmsis_to_remove.append(mmsi)
+                continue
 
-            elif ship["state"] == STATE_CLEARED:
-                ship["pos"]["x"] += 3
-                if ship["pos"]["x"] > 600:
+            if ship["state"] == STATE_DOCKED:
+                ship["docked_ticks"] += 1
+                if ship["docked_ticks"] > 8:
                     for berth in sim_ctx.berths:
-                        if (berth.occupied_by is None and
-                                berth.length >= ship["meta"]["length"] and
-                                berth.width >= ship["meta"]["width"]):
-                            berth.occupied_by = mmsi
-                            berth.status = "Occupied"
-                            ship["state"] = STATE_DOCKED
-                            sim_ctx.port_channel.remove(mmsi)
-                            break
+                        if berth.occupied_by == mmsi:
+                            berth.occupied_by = None
+                            berth.status = "Empty"
+                    mmsis_to_remove.append(mmsi)
 
-            elif ship["state"] == STATE_DOCKED:
-                if random.random() < 0.05:
-                    for b in sim_ctx.berths:
-                        if b.occupied_by == mmsi:
-                            b.occupied_by = None
-                            b.status = "Empty"
-                            break
-                    ship["state"] = "DEPARTED"
+        for mmsi in mmsis_to_remove:
+            del sim_ctx.active_ships[mmsi]
 
-        await control_entry_sequence()
-
+        sim_ctx.current_time = window_end
         await asyncio.sleep(1)
 
-    print("EXIT: Simulation Loop Stopped")
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 if __name__ == "__main__":
     import uvicorn
