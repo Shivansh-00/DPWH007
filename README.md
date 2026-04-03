@@ -1,106 +1,89 @@
 # TEAM: DPWH007
+# Port Docking Decision System (PDDS) Command Center
 
-# Port Docking Decision System (PDDS)
+## Project Overview
+The Port Docking Decision System (PDDS) is a high-fidelity maritime simulation and decision-support platform. It utilizes historical AIS (Automatic Identification System) data to recreate port operations, simulate environmental stressors, and provide AI-driven predictive insights into vessel arrival times. The system is designed to optimize berth occupancy and prioritize vessel entry based on cargo priority and operational risk.
 
-PDDS is an intelligent maritime simulation and decision-support tool designed to optimize the docking process for
-incoming vessels. By prioritizing ships based on cargo type (e.g., Food > Tanker) and managing port entry through a
-controlled anchorage-to-channel sequence, PDDS reduces congestion and waiting times.
+## Technical Architecture
 
-## Features
+### 1. Data Infrastructure
+- **Historical Playback**: The system processes and replays real-world AIS datasets from January 2024. Data is stored in MongoDB as time-series events (`sim_events`) and static vessel metadata (`vessels`).
+- **Asynchronous Simulation**: The backend utilizes an asynchronous playback loop that windows historical data into 15-minute intervals, simulating a real-time sensor feed.
 
-- **AIS Data Integration**: Processes raw AIS datasets, cleaning and enriching them with vessel metadata.
-- **Priority-Based Docking**: Implements a scoring system (Food > Tanker > Roll-on > Container > Bulk Carrier).
-- **Zone-Based Control**: Real-world simulation of Open Sea, Anchorage, Port Channel, and Berths.
-- **Risk Simulation**: Injects synthetic operational risks (Weather, Geopolitical) to test port resilience.
-- **Interactive Dashboard**: A premium Next.js dashboard with real-time ship tracking and berth management.
+### 2. AI Predictive Engine (ETA)
+- **Model**: A RandomForestRegressor (`eta_model.pkl`) is integrated for real-time inference.
+- **Feature Vector**: Predictions are based on a 3-dimensional feature set:
+    - **distance_to_port**: Calculated via the Haversine formula from current coordinates to the port center.
+    - **effective_speed**: The vessel's Speed Over Ground (SOG) after accounting for environmental penalties and synthetic anomalies.
+    - **inv_speed**: An inverse speed metric (`1 / (SOG + 0.1)`) utilized to ensure model stability and high-resolution arrival probability.
 
-## Tech Stack
+### 3. Stability and Sanitization
+- **Recursive JSON Cleaning**: To prevent API failures due to out-of-range floating-point values (NaN, Inf) commonly found in raw AIS data or AI regression outputs, the system employs a deep-sanitization layer (`sanitize_recursive`). This ensures all JSON responses remain standard-compliant.
 
-- **Backend**: FastAPI (Python), Motor (Async MongoDB Driver).
-- **Frontend**: Next.js, React, Framer Motion, Lucide Icons, Vanilla CSS.
-- **Database**: MongoDB.
-- **Tools**: Pandas (Data Cleaning), Uvicorn.
+## Operational Modes and Anomalies
+The PDDS Command Center supports dynamic manipulation of the simulation state through global anomaly modes. These modes allow operators to test port resilience under non-ideal conditions.
 
----
+### Global Anomaly Modes
+- **NORMAL**: Adheres to historical AIS behavior.
+- **STOP**: Forces all vessel SOG to 0.0 (simulating a total port halt).
+- **SLOW**: Reduces all vessel SOG by 50% (simulating congestion or equipment failure).
+- **FAST**: Increases all vessel SOG by 50% (simulating emergency clearance).
 
-## Setup Instructions
+### Environmental Stressors
+- **Weather Simulation**: Interactive "Storm Circles" can be positioned on the simulation grid. Vessels entering the storm radius suffer an automatic 80% reduction in SOG, which is dynamically reflected in their AI-calculated ETA.
+
+## API Documentation
+
+### Core Simulation Endpoints
+- **GET /health**: Returns the system status and indicates if the simulation loop is active.
+- **GET /simulation/state**: Provides the complete state of the simulation, including active ships, berth occupancy, weather coordinates, and the current anomaly mode.
+- **POST /simulation/anomaly**: Updates the global anomaly mode.
+    - Payload: `{ "mode": "STOP" | "SLOW" | "FAST" | "NORMAL" }`
+- **POST /simulation/reset**: Terminates the current playback and resets the simulation timeline to the initial dataset state.
+- **POST /start**: Initializes the background simulation loop using the earliest available historical timestamp.
+
+### Infrastructure Management
+- **POST /port/berth**: Adds a new berth to the port configuration with custom dimensions.
+- **DELETE /port/berth/{id}**: Removes a berth by its unique identifier.
+
+## Installation and Setup
 
 ### 1. Prerequisites
-
-- Python 3.9+
-- Node.js 18+
-- MongoDB Running locally (or a connection string)
-- Conda or venv
+- Python 3.9 or higher
+- MongoDB instance (local or remote)
+- Node.js (for optional frontend visualization)
 
 ### 2. Environment Configuration
-
-Create a `.env` file in the root directory:
-
+Create a `.env` file in the project root with the following variables:
 ```env
-MONGO_URL=mongodb://your_user:your_password@localhost:27017/admin
+MONGO_URL=mongodb://your_username:your_password@localhost:27017/port_simulation
 ```
 
-### 3. Backend Setup
-
+### 3. Backend Deployment
 ```bash
-# Create and activate virtual environment
+# Initialize virtual environment
 python3 -m venv venv
 source venv/bin/activate
 
 # Install dependencies
-pip install pandas matplotlib seabed seaborn motor fastapi uvicorn pymongo python-dotenv pydantic
+pip install fastapi uvicorn motor pandas pickle-mixin scikit-learn python-dotenv pydantic requests
 ```
 
-### 4. Frontend Setup
+### 4. Database Preparation
+Ensure the `port_simulation` database contains the `sim_events` and `vessels` collections. Data must be in an ISODate format for the playback engine to function correctly.
 
+## Usage and Verification
+
+### Running the API
 ```bash
-cd frontend
-npm install
-```
-
----
-
-## How to Run
-
-### Step 1: Data Cleaning & Ingestion
-
-First, clean the raw AIS data and push it to MongoDB:
-
-```bash
-# Assuming Python environment is active
-python3 clean_data.py   # Cleans local ais_raw.csv
-python3 ingest_data.py  # Enriches data and syncs to MongoDB
-```
-
-### Step 2: Start the Backend
-
-```bash
+# Execute the FastAPI server
 python3 api/main.py
 ```
 
-The API will be available at `http://localhost:8000`. You can view the docs at `/docs`.
-
-### Step 3: Start the Frontend
-
+### Automated Verification
+A dedicated verification script is provided to test the "Perfect API" features, including simulation startup and anomaly injection.
 ```bash
-cd frontend
-npm run dev -- --hostname 0.0.0.0
+# Ensure the backend is running, then execute:
+python3 scripts/verify_api.py
 ```
-
-Open `http://localhost:3001` (or your local IP provided by the CLI) in your browser.
-
----
-
-## Simulation Logic
-
-1. **APPROACHING**: Ships move from the Open Sea towards the port boundary.
-2. **WAITING**: Once they cross the boundary, they enter the **Anchorage Zone**.
-3. **CLEARED**: The Decision Engine picks the highest priority ship from the Anchorage queue if a berth is likely to be
-   available.
-4. **DOCKED**: Ships enter the **Port Channel** and proceed to a matching **Berth** based on length/width constraints.
-
-## Priority Scoring
-
-- **Food Ships**: Priority 1 (Perishable) - Red
-- **Tankers**: Priority 2 (Hazardous) - Yellow
-- **General Cargo/Others**: Priority 3-5 - Blue
+This script will programmatically start the simulation, monitor vessel population, and verify that velocity modifiers are correctly applied in real-time.

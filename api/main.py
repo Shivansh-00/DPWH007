@@ -74,6 +74,7 @@ class SimulationContext:
         self.ticks = 0
         self.weather_center: Optional[Dict[str, float]] = None
         self.weather_radius: float = 100.0
+        self.anomaly_mode: str = "NORMAL"  # "NORMAL", "STOP", "SLOW", "FAST"
 
 
 sim_ctx = SimulationContext()
@@ -99,25 +100,41 @@ app.add_middleware(
 )
 
 
+def sanitize_recursive(obj):
+    """Deeply sanitize a dictionary/list for JSON compliance"""
+    if isinstance(obj, dict):
+        return {k: sanitize_recursive(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_recursive(i) for i in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return 0.0
+        return obj
+    return obj
+
+
 def sanitize_float(v, default=0.0):
     """Ensure float is JSON compliant (no NaN/Inf)"""
     try:
-        if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+        val = float(v)
+        if math.isnan(val) or math.isinf(val):
             return default
-        return float(v)
+        return val
     except:
         return default
 
 
 @app.get("/simulation/state")
 async def get_sim_state():
-    return {
+    data = {
         "current_time": str(sim_ctx.current_time) if sim_ctx.current_time else "Not Started",
-        "berths": sim_ctx.berths,
+        "berths": [b.model_dump() for b in sim_ctx.berths], # Ensure Pydantic model is dict
         "ships": list(sim_ctx.active_ships.values()),
         "bounds": {"lat": [LAT_MIN, LAT_MAX], "lon": [LON_MIN, LON_MAX]},
-        "weather": {"center": sim_ctx.weather_center, "radius": sim_ctx.weather_radius}
+        "weather": {"center": sim_ctx.weather_center, "radius": sim_ctx.weather_radius},
+        "anomaly_mode": sim_ctx.anomaly_mode
     }
+    return sanitize_recursive(data)
 
 
 @app.post("/simulation/weather")
@@ -133,10 +150,26 @@ async def add_berth(berth: Berth):
     return {"status": "added"}
 
 
-@app.delete("/port/berth/{id}")
-async def remove_berth(id: int):
-    sim_ctx.berths = [b for b in sim_ctx.berths if b.id != id]
-    return {"status": "removed"}
+@app.post("/simulation/anomaly")
+async def set_anomaly(data: dict):
+    mode = data.get("mode", "NORMAL").upper()
+    if mode in ["NORMAL", "STOP", "SLOW", "FAST"]:
+        sim_ctx.anomaly_mode = mode
+        return {"status": "anomaly updated", "mode": mode}
+    return {"status": "error", "message": "Invalid anomaly mode"}
+
+
+@app.post("/simulation/reset")
+async def reset_simulation():
+    sim_ctx.current_time = None
+    sim_ctx.active_ships = {}
+    sim_ctx.is_running = False
+    return {"status": "reset complete"}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "sim_running": sim_ctx.is_running}
 
 
 @app.post("/start")
@@ -185,6 +218,14 @@ async def run_playback_loop():
             sog = sanitize_float(event.get("sog"), 0.0)
             cog = sanitize_float(event.get("cog"), 0.0)
             
+            # Global Anomaly Modifiers
+            if sim_ctx.anomaly_mode == "STOP":
+                sog = 0.0
+            elif sim_ctx.anomaly_mode == "SLOW":
+                sog *= 0.5
+            elif sim_ctx.anomaly_mode == "FAST":
+                sog *= 1.5
+
             in_storm = False
             if sim_ctx.weather_center:
                 dx = pos["x"] - sim_ctx.weather_center["x"]
