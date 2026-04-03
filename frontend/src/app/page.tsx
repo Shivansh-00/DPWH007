@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { Ship, Anchor, Loader, ShieldAlert, Play, StopCircle, Settings, LayoutGrid } from "lucide-react";
-import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
 
 const API_BASE = "http://localhost:8000";
@@ -31,12 +30,17 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const res = await axios.get(`${API_BASE}/simulation/state`);
-        setShips(res.data.ships);
-        setBerths(res.data.berths);
-        setStats({ anchorage: res.data.anchorage_count, channel: res.data.channel_count });
+        const res = await fetch(`${API_BASE}/simulation/state`);
+        if (!res.ok) throw new Error("Network response was not ok");
+        const data = await res.json();
+        setShips(data.ships);
+        setBerths(data.berths);
+        setStats({ 
+          anchorage: data.anchorage_count, 
+          channel: data.channel_count 
+        });
       } catch (e) {
-        console.error("API Error", e);
+        console.error("Fetch Error", e);
       }
     };
 
@@ -44,13 +48,13 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  const startSim = () => {
-    axios.post(`${API_BASE}/start`);
+  const startSim = async () => {
+    await fetch(`${API_BASE}/start`, { method: "POST" });
     setIsRunning(true);
   };
 
-  const stopSim = () => {
-    axios.post(`${API_BASE}/stop`);
+  const stopSim = async () => {
+    await fetch(`${API_BASE}/stop`, { method: "POST" });
     setIsRunning(false);
   };
 
