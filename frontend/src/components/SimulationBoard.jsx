@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback } from 'react';
 import './SimulationBoard.css';
 
 const SHIP_COLORS = {
@@ -27,7 +27,7 @@ const SHIP_ICONS = {
   Food: '🍎',
 };
 
-export default function SimulationBoard({ ships, berths, events, clockMs }) {
+export default function SimulationBoard({ ships, berths, events, clockMs, weatherCenter, anomalyMode }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const mousePosRef = useRef(null);
@@ -115,9 +115,39 @@ export default function SimulationBoard({ ships, berths, events, clockMs }) {
     ctx.lineTo(dockX, H);
     ctx.stroke();
 
-    ctx.fillStyle = 'rgba(34, 197, 94, 0.6)';
     ctx.font = '700 12px Inter, sans-serif';
     ctx.fillText('DOCK', dockX + (W - dockX) / 2, 20);
+
+    // ─── Weather Effect ──────────────────────────────────
+    if (weatherCenter) {
+      const wx = weatherCenter.x;
+      const wy = weatherCenter.y;
+      const wr = 150; // Default radius
+
+      // Draw stylized storm zone
+      const stormGrad = ctx.createRadialGradient(wx, wy, 0, wx, wy, wr);
+      stormGrad.addColorStop(0, 'rgba(239, 68, 68, 0.15)');
+      stormGrad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+      
+      ctx.fillStyle = stormGrad;
+      ctx.beginPath();
+      ctx.arc(wx, wy, wr, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Pulsing boundary
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.3)';
+      ctx.setLineDash([5, 5]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(wx, wy, wr + Math.sin(Date.now() / 200) * 5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Storm icon
+      ctx.font = '24px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('⛈️', wx, wy + 8);
+    }
 
     // ─── Draw Berths ───────────────────────────────────
     if (berths && berths.length > 0) {
@@ -266,15 +296,21 @@ export default function SimulationBoard({ ships, berths, events, clockMs }) {
             ctx.textAlign = 'left';
             ctx.fillText(`${SHIP_ICONS[ship.ship_type] || '🚢'} MV ${ship.ship_id}`, tooltipX + 10, tooltipY + 16);
 
-            ctx.fillStyle = '#94a3b8';
             ctx.font = '500 9px Inter, sans-serif';
             ctx.fillText(`ETA: ${Math.round(ship.eta_minutes)} min`, tooltipX + 10, tooltipY + 32);
-            ctx.fillText(`Priority: ${(ship.priority_score || 0).toFixed(2)}`, tooltipX + 10, tooltipY + 46);
-            ctx.fillText(`State: ${ZONE_LABELS[ship.zone] || ship.zone}`, tooltipX + 10, tooltipY + 60);
+            
+            // Show effective speed if it was modified
+            const isModified = ship.effective_speed_knots && Math.abs(ship.effective_speed_knots - ship.speed_knots) > 0.1;
+            ctx.fillStyle = isModified ? '#f87171' : '#94a3b8';
+            ctx.fillText(`Speed: ${ship.effective_speed_knots?.toFixed(1) || ship.speed_knots.toFixed(1)} kt`, tooltipX + 10, tooltipY + 46);
+            
+            ctx.fillStyle = '#94a3b8';
+            ctx.fillText(`Priority: ${(ship.priority_score || 0).toFixed(2)}`, tooltipX + 10, tooltipY + 60);
+            ctx.fillText(`State: ${ZONE_LABELS[ship.zone] || ship.zone}`, tooltipX + 10, tooltipY + 74);
 
             if (ship.assigned_berth_id) {
                ctx.fillStyle = '#34d399';
-               ctx.fillText(`Assigned: B${ship.assigned_berth_id}`, tooltipX + 10, tooltipY + 74);
+               ctx.fillText(`Assigned: B${ship.assigned_berth_id}`, tooltipX + 10, tooltipY + 84);
             }
           }
         }
@@ -292,7 +328,7 @@ export default function SimulationBoard({ ships, berths, events, clockMs }) {
       ctx.fill();
     }
 
-  }, [ships, berths, clockMs]);
+  }, [ships, berths, clockMs, weatherCenter]);
 
   useEffect(() => {
     drawSimulation();

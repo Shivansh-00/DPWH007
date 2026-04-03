@@ -4,10 +4,11 @@ import SimulationBoard from './components/SimulationBoard';
 import MetricsDashboard from './components/MetricsDashboard';
 import ControlPanel from './components/ControlPanel';
 import AIAssistant from './components/AIAssistant';
+import AnomalyPanel from './components/AnomalyPanel';
 import './App.css';
 
-const API_BASE = 'http://localhost:8000';
-const WS_URL = 'ws://localhost:8000/ws/simulation';
+const API_BASE = 'http://127.0.0.1:8000';
+const WS_URL = 'ws://127.0.0.1:8000/ws/simulation';
 
 function App() {
   const [screen, setScreen] = useState('setup'); // 'setup' | 'simulation'
@@ -18,6 +19,9 @@ function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [anomalyMode, setAnomalyMode] = useState('NORMAL');
+  const [weatherCenter, setWeatherCenter] = useState(null);
+  const [weatherActive, setWeatherActive] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
 
   const wsRef = useRef(null);
@@ -39,6 +43,9 @@ function App() {
         setBerths(payload.berths || []);
         setEvents(payload.events || []);
         setMetrics(payload.metrics || {});
+        if (payload.anomaly_mode) setAnomalyMode(payload.anomaly_mode);
+        setWeatherCenter(payload.weather_center || null);
+        setWeatherActive(!!payload.weather_center);
       } catch (e) {
         console.error('Failed to parse WS message:', e);
       }
@@ -53,7 +60,7 @@ function App() {
       setConnectionStatus('error');
       console.error('WebSocket error:', err);
     };
-  }, []);
+  }, [WS_URL, setShips, setBerths, setEvents, setMetrics, setAnomalyMode, setWeatherCenter, setWeatherActive]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -138,6 +145,25 @@ function App() {
     }
   };
 
+  const handleSetAnomaly = (mode) => {
+    setAnomalyMode(mode);
+    sendCommand('/api/simulation/anomaly', { mode });
+  };
+
+  const handleToggleWeather = () => {
+    const nextActive = !weatherActive;
+    setWeatherActive(nextActive);
+    if (nextActive) {
+      // Spawn storm in a common lane (middle-ish)
+      sendCommand('/api/simulation/weather', {
+        center: { x: 400, y: 300 },
+        radius: 150
+      });
+    } else {
+      sendCommand('/api/simulation/weather', { center: null });
+    }
+  };
+
   // ─── Render ──────────────────────────────────────────────────────────
   if (screen === 'setup') {
     return <SetupScreen onStart={startSimulation} />;
@@ -173,10 +199,18 @@ function App() {
             berths={berths}
             events={events}
             clockMs={metrics.clock_ms || 0}
+            weatherCenter={weatherCenter}
+            anomalyMode={anomalyMode}
           />
         </div>
 
         <aside className="sim-sidebar">
+          <AnomalyPanel 
+            anomalyMode={anomalyMode}
+            weatherActive={weatherActive}
+            onSetAnomaly={handleSetAnomaly}
+            onToggleWeather={handleToggleWeather}
+          />
           <MetricsDashboard metrics={metrics} ships={ships} />
 
           {/* Queue View */}
@@ -217,7 +251,12 @@ function App() {
         </aside>
       </main>
 
-      <AIAssistant ships={ships} metrics={metrics} />
+      <AIAssistant 
+        ships={ships} 
+        metrics={metrics} 
+        anomalyMode={anomalyMode} 
+        weatherActive={weatherActive} 
+      />
     </div>
   );
 }

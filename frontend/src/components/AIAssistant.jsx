@@ -3,7 +3,7 @@ import './AIAssistant.css';
 
 const API_BASE = 'http://localhost:8000';
 
-function AIAssistant({ ships, metrics }) {
+function AIAssistant({ ships, metrics, anomalyMode, weatherActive }) {
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState('');
   const [history, setHistory] = useState([
@@ -44,6 +44,8 @@ function AIAssistant({ ships, metrics }) {
 - Critical Fuel: ${criticalShips} ships.
 - Avg Wait Time: ${avgWait}m.
 - Efficiency Score: ${effScore}.
+- Traffic Mode: ${anomalyMode || 'NORMAL'}.
+- Weather: ${weatherActive ? 'Severe Storm' : 'Clear Skies'}.
 
 User Query: ${userMsg}
 Give a concise, helpful response.`;

@@ -70,7 +70,8 @@ class Ship(BaseModel):
     # Navigation state
     position_x: float = 0.0       # Grid X coordinate (0 = far left, increases toward dock)
     position_y: float = 0.0       # Grid Y coordinate
-    speed_knots: float = 10.0     # Current speed
+    speed_knots: float = 10.0     # Original programmed speed
+    effective_speed_knots: Optional[float] = None # Adjusted speed (weather, traffic)
     heading_deg: float = 90.0     # Direction of travel
 
     # Distance / Time calculations
@@ -155,3 +156,5 @@ class SimulationTickPayload(BaseModel):
     berths: List[Berth]
     events: List[SimulationEvent] = []
     metrics: dict = {}
+    anomaly_mode: str = "NORMAL"
+    weather_center: Optional[dict] = None

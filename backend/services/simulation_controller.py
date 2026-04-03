@@ -22,6 +22,7 @@ import time
 import os
 import pickle
 import pandas as pd
+import random
 from typing import List, Callable, Awaitable, Optional
 
 try:
@@ -82,6 +83,11 @@ class SimulationController:
         # Simulation mode
         self.policy_mode: str = "SCORING"  # "SCORING", "FCFS", "PRIORITY_ONLY"
 
+        # Anomalies
+        self.anomaly_mode: str = "NORMAL"
+        self.weather_center: Optional[dict] = None
+        self.weather_radius: float = 100.0
+
         # Metrics accumulator
         self.metrics: dict = {
             "total_ships_processed": 0,
@@ -119,6 +125,9 @@ class SimulationController:
         self.global_clock_ms = 0
         self.tick_count = 0
         self.events_log = []
+        self.anomaly_mode = "NORMAL"
+        self.weather_center = None
+        self.weather_radius = 100.0
         self.metrics = {
             "total_ships_processed": 0,
             "total_reshuffles": 0,
@@ -180,7 +189,9 @@ class SimulationController:
                     ships=self.ships,
                     berths=self.berths,
                     events=tick_events,
-                    metrics=self._compute_snapshot_metrics()
+                    metrics=self._compute_snapshot_metrics(),
+                    anomaly_mode=self.anomaly_mode,
+                    weather_center=self.weather_center
                 )
                 try:
                     await self._broadcast_callback(payload)
@@ -248,20 +259,21 @@ class SimulationController:
         return all_events
 
     def _calculate_ai_eta(self, ship: Ship) -> float:
-        if ship.speed_knots <= 0:
+        eff_speed = ship.effective_speed_knots if ship.effective_speed_knots is not None else ship.speed_knots
+        if eff_speed <= 0:
             return 0.0
             
         if ai_eta_model is not None:
             try:
-                inv_speed = 1.0 / (ship.speed_knots + 0.1)
+                inv_speed = 1.0 / (eff_speed + 0.1)
                 features_df = pd.DataFrame([
-                    [ship.distance_to_boundary, ship.speed_knots, inv_speed]
+                    [ship.distance_to_boundary, eff_speed, inv_speed]
                 ], columns=['distance_to_port', 'effective_speed', 'inv_speed'])
                 return max(0.0, float(ai_eta_model.predict(features_df)[0]))
             except Exception as e:
                 pass
                 
-        return max(0, (ship.distance_to_boundary / ship.speed_knots) * 60)
+        return max(0, (ship.distance_to_boundary / eff_speed) * 60)
 
     def _move_ships(self):
         """
@@ -273,6 +285,30 @@ class SimulationController:
         elapsed_hours = self.virtual_seconds_per_tick / 3600.0
 
         for ship in self.ships:
+            # Calculate effective speed
+            eff_speed = ship.speed_knots
+            if self.anomaly_mode == "STOP":
+                eff_speed = 0.0
+            elif self.anomaly_mode == "SLOW":
+                eff_speed *= 0.5
+            elif self.anomaly_mode == "FAST":
+                eff_speed *= 1.5
+
+            if self.weather_center:
+                dx = ship.position_x - self.weather_center.get("x", 0)
+                dy = ship.position_y - self.weather_center.get("y", 0)
+                if (dx**2 + dy**2)**0.5 < self.weather_radius:
+                    eff_speed *= 0.2
+            
+            # Enforce a floor speed for ships that SHOULD be moving (procedural or after AIS ends)
+            # This prevents ships from getting stuck at permanent 0 knots if AIS last point was 0.
+            if self.anomaly_mode != "STOP" and ship.zone in (ShipZone.OPEN_SEA, ShipZone.APPROACHING, ShipZone.CLEARED_TO_ENTER, ShipZone.IN_CHANNEL):
+                if eff_speed < 2.0:
+                    # Use a stable random speed based on ship_id to avoid "jittery" movement every tick
+                    eff_speed = random.Random(ship.ship_id).uniform(3.0, 10.0)
+            
+            ship.effective_speed_knots = eff_speed
+
             # Replay AIS Data if available in buffer
             # We assume self._playback_buffer stores dicts map of ship_id -> list of (offset_ms, lat, lon, heading, speed)
             if hasattr(self, '_playback_buffer') and ship.ship_id in self._playback_buffer and ship.zone in (ShipZone.OPEN_SEA, ShipZone.APPROACHING):
@@ -296,7 +332,7 @@ class SimulationController:
                 
                 # Simple visual mapping: lon -> x, lat -> y
                 # (You would need bounds. For now, just reduce distance based on speed manually to trigger boundary)
-                distance_covered = ship.speed_knots * elapsed_hours
+                distance_covered = ship.effective_speed_knots * elapsed_hours
                 ship.distance_to_boundary -= distance_covered
                 ship.position_x += distance_covered * 2
 
@@ -304,13 +340,13 @@ class SimulationController:
                     ship.zone = ShipZone.APPROACHING
 
                 # ETA recalculation
-                if ship.zone == ShipZone.APPROACHING and ship.speed_knots > 0:
+                if ship.zone == ShipZone.APPROACHING and ship.effective_speed_knots > 0:
                     ship.eta_minutes = self._calculate_ai_eta(ship)
             
             else:
                 # Standard procedural movement
                 if ship.zone == ShipZone.OPEN_SEA:
-                    distance_covered = ship.speed_knots * elapsed_hours
+                    distance_covered = ship.effective_speed_knots * elapsed_hours
                     ship.distance_to_boundary -= distance_covered
                     ship.position_x += distance_covered * 2
     
@@ -318,11 +354,11 @@ class SimulationController:
                         ship.zone = ShipZone.APPROACHING
     
                 elif ship.zone == ShipZone.APPROACHING:
-                    distance_covered = ship.speed_knots * elapsed_hours
+                    distance_covered = ship.effective_speed_knots * elapsed_hours
                     ship.distance_to_boundary -= distance_covered
                     ship.position_x += distance_covered * 2
     
-                    if ship.speed_knots > 0:
+                    if ship.effective_speed_knots > 0:
                         ship.eta_minutes = self._calculate_ai_eta(ship)
 
             # Common movement logic for controlled zones
@@ -331,7 +367,7 @@ class SimulationController:
 
             elif ship.zone in (ShipZone.CLEARED_TO_ENTER, ShipZone.IN_CHANNEL):
                 # Max 3 knots in channel
-                channel_speed = min(ship.speed_knots, 3.0)
+                channel_speed = min(ship.effective_speed_knots, 3.0)
                 distance_covered = channel_speed * elapsed_hours
                 ship.position_x += distance_covered * 2
 

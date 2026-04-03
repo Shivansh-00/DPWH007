@@ -60,6 +60,17 @@ class StartSimulationRequest(BaseModel):
 class SpeedRequest(BaseModel):
     speed: float
 
+class AnomalyRequest(BaseModel):
+    mode: str  # NORMAL, STOP, SLOW, FAST
+
+class WeatherCenter(BaseModel):
+    x: float
+    y: float
+
+class WeatherRequest(BaseModel):
+    center: Optional[WeatherCenter] = None
+    radius: float = 100.0
+
 
 # ─── WebSocket Broadcast ─────────────────────────────────────────────────────
 
@@ -159,6 +170,8 @@ async def start_simulation(req: StartSimulationRequest):
         "berths": len(berths),
         "policy": req.policy_mode,
         "speed": req.playback_speed,
+        "anomaly_mode": sim_controller.anomaly_mode,
+        "weather_center": sim_controller.weather_center
     }
 
 
@@ -184,6 +197,26 @@ async def reset_simulation():
 async def set_speed(req: SpeedRequest):
     sim_controller.set_speed(req.speed)
     return {"status": "speed_set", "speed": req.speed}
+
+
+@router.post("/api/simulation/anomaly")
+async def set_anomaly(req: AnomalyRequest):
+    mode = req.mode.upper()
+    if mode in ["NORMAL", "STOP", "SLOW", "FAST"]:
+        sim_controller.anomaly_mode = mode
+        return {"status": "anomaly updated", "mode": mode}
+    return {"status": "error", "message": "Invalid anomaly mode"}
+
+
+@router.post("/api/simulation/weather")
+async def set_weather(req: WeatherRequest):
+    if req.center:
+        sim_controller.weather_center = {"x": req.center.x, "y": req.center.y}
+        sim_controller.weather_radius = req.radius
+        return {"status": "weather updated", "center": req.center.model_dump(), "radius": req.radius}
+    else:
+        sim_controller.weather_center = None
+        return {"status": "weather cleared"}
 
 
 @router.get("/api/simulation/state")
