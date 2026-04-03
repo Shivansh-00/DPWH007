@@ -1,0 +1,187 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Metrics Dashboard Styles
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.metrics-dashboard {
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+}
+
+.metrics-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.metrics-icon { font-size: 1rem; }
+
+/* ─── KPI Grid ─────────────────────────────────────────────────────────────── */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.kpi-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 0.6rem 0.25rem;
+  text-align: center;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+  overflow: hidden;
+}
+
+.kpi-card:hover {
+  border-color: var(--border-medium);
+  transform: translateY(-1px);
+}
+
+.kpi-icon { font-size: 1.1rem; margin-bottom: 0.25rem; }
+.kpi-value {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+.kpi-label {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ─── Distribution Section ─────────────────────────────────────────────────── */
+.distribution-section {
+  margin-bottom: 1rem;
+}
+
+.dist-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.6rem;
+}
+
+/* Zone Bars */
+.zone-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.zone-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.zone-label {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  min-width: 100px;
+  text-transform: capitalize;
+}
+
+.zone-bar-track {
+  flex: 1;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.zone-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue));
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.zone-count {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 20px;
+  text-align: right;
+}
+
+/* Type Chips */
+.type-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.type-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.6rem;
+  background: var(--bg-surface);
+  border: 1px solid;
+  border-radius: 20px;
+  font-size: 0.72rem;
+}
+
+.chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.chip-label { color: var(--text-secondary); }
+.chip-count {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ─── Sim Clock ────────────────────────────────────────────────────────────── */
+.sim-clock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.6rem;
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.clock-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.clock-value {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--accent-cyan);
+}
+
+.clock-speed {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  background: rgba(20, 184, 166, 0.15);
+  color: var(--accent-teal);
+  border-radius: 10px;
+  font-weight: 600;
+}

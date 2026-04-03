@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy requirements and install
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy all source
+COPY . .
+
+# Set envars
+ENV PYTHONPATH=/app
+ENV MONGODB_URI=mongodb://mongo:27017/
+ENV MONGODB_DB=smart_docking_sim
+
+EXPOSE 8000
+
+CMD ["python", "-m", "backend.main"]

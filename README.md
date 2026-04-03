@@ -1,89 +1,64 @@
-# TEAM: DPWH007
-# Port Docking Decision System (PDDS) Command Center
+# Smart Docking Decision Intelligence Engine
 
-## Project Overview
-The Port Docking Decision System (PDDS) is a high-fidelity maritime simulation and decision-support platform. It utilizes historical AIS (Automatic Identification System) data to recreate port operations, simulate environmental stressors, and provide AI-driven predictive insights into vessel arrival times. The system is designed to optimize berth occupancy and prioritize vessel entry based on cargo priority and operational risk.
+A full-stack, data-driven maritime simulation engine that replicates port operations using real AIS trajectory playback. 
+Built using **FastAPI**, **React.js (Vite)**, and **MongoDB**, this framework features dynamic queue sequencing, turnaround-time optimized berth distribution, and visual metrics analysis.
 
-## Technical Architecture
+## Features
+- **Real-World AIS Playback**: Overrides procedural logic with timestamped mapping on approach paths.
+- **Queue Reshuffling Constraints**: Ships are sequenced into Anchorage wait-zones until dynamic policy approvals trigger.
+- **Deadlock Management**: Checks port capacities and attempts smart pre-assignments.
+- **Glassmorphic Interactive Dashboard**: Configured with live event tickers and zone tracking visual layouts.
 
-### 1. Data Infrastructure
-- **Historical Playback**: The system processes and replays real-world AIS datasets from January 2024. Data is stored in MongoDB as time-series events (`sim_events`) and static vessel metadata (`vessels`).
-- **Asynchronous Simulation**: The backend utilizes an asynchronous playback loop that windows historical data into 15-minute intervals, simulating a real-time sensor feed.
+## Requirements
+- Docker
+- Docker Compose
 
-### 2. AI Predictive Engine (ETA)
-- **Model**: A RandomForestRegressor (`eta_model.pkl`) is integrated for real-time inference.
-- **Feature Vector**: Predictions are based on a 3-dimensional feature set:
-    - **distance_to_port**: Calculated via the Haversine formula from current coordinates to the port center.
-    - **effective_speed**: The vessel's Speed Over Ground (SOG) after accounting for environmental penalties and synthetic anomalies.
-    - **inv_speed**: An inverse speed metric (`1 / (SOG + 0.1)`) utilized to ensure model stability and high-resolution arrival probability.
+## Quick Start (Dockerized)
 
-### 3. Stability and Sanitization
-- **Recursive JSON Cleaning**: To prevent API failures due to out-of-range floating-point values (NaN, Inf) commonly found in raw AIS data or AI regression outputs, the system employs a deep-sanitization layer (`sanitize_recursive`). This ensures all JSON responses remain standard-compliant.
+This setup is fully portable. The Docker cluster spins up the **FastAPI Backend**, the **Vite/Nginx Frontend**, and an isolated **MongoDB container** equipped with persistent volumes.
 
-## Operational Modes and Anomalies
-The PDDS Command Center supports dynamic manipulation of the simulation state through global anomaly modes. These modes allow operators to test port resilience under non-ideal conditions.
-
-### Global Anomaly Modes
-- **NORMAL**: Adheres to historical AIS behavior.
-- **STOP**: Forces all vessel SOG to 0.0 (simulating a total port halt).
-- **SLOW**: Reduces all vessel SOG by 50% (simulating congestion or equipment failure).
-- **FAST**: Increases all vessel SOG by 50% (simulating emergency clearance).
-
-### Environmental Stressors
-- **Weather Simulation**: Interactive "Storm Circles" can be positioned on the simulation grid. Vessels entering the storm radius suffer an automatic 80% reduction in SOG, which is dynamically reflected in their AI-calculated ETA.
-
-## API Documentation
-
-### Core Simulation Endpoints
-- **GET /health**: Returns the system status and indicates if the simulation loop is active.
-- **GET /simulation/state**: Provides the complete state of the simulation, including active ships, berth occupancy, weather coordinates, and the current anomaly mode.
-- **POST /simulation/anomaly**: Updates the global anomaly mode.
-    - Payload: `{ "mode": "STOP" | "SLOW" | "FAST" | "NORMAL" }`
-- **POST /simulation/reset**: Terminates the current playback and resets the simulation timeline to the initial dataset state.
-- **POST /start**: Initializes the background simulation loop using the earliest available historical timestamp.
-
-### Infrastructure Management
-- **POST /port/berth**: Adds a new berth to the port configuration with custom dimensions.
-- **DELETE /port/berth/{id}**: Removes a berth by its unique identifier.
-
-## Installation and Setup
-
-### 1. Prerequisites
-- Python 3.9 or higher
-- MongoDB instance (local or remote)
-- Node.js (for optional frontend visualization)
-
-### 2. Environment Configuration
-Create a `.env` file in the project root with the following variables:
-```env
-MONGO_URL=mongodb://your_username:your_password@localhost:27017/port_simulation
-```
-
-### 3. Backend Deployment
 ```bash
-# Initialize virtual environment
-python3 -m venv venv
-source venv/bin/activate
+# 1. Build the Docker cluster
+docker-compose build
 
-# Install dependencies
-pip install fastapi uvicorn motor pandas pickle-mixin scikit-learn python-dotenv pydantic requests
+# 2. Run the environment
+docker-compose up -d
 ```
 
-### 4. Database Preparation
-Ensure the `port_simulation` database contains the `sim_events` and `vessels` collections. Data must be in an ISODate format for the playback engine to function correctly.
+### Self-Seeding Database
+On its very first boot, the backend container detects if its internal MongoDB is empty. If it is, the backend will automatically parse `data/ais_raw.csv` and chunk load **150,000 real AIS coordinates** into the database. You'll see a console log when seeding is complete. Let it finish mapping the vectors before running heavy simulation starts.
 
-## Usage and Verification
+### Accessing the Application
+- **Frontend UI**: [http://localhost:5173](http://localhost:5173) *(Via local port proxy)*
+- **Backend API**: [http://localhost:8000/docs](http://localhost:8000/docs) *(Swagger UI)*
+- **Database**: Port `27017` is exposed locally. Connect using MongoDB Compass at `mongodb://localhost:27017/`.
 
-### Running the API
+---
+
+## Local Development (Without Docker)
+
+You can run the engine directly hooked into your host MongoDB.
+
+**Setup Anaconda environment:**
 ```bash
-# Execute the FastAPI server
-python3 api/main.py
+conda create -n snackk python=3.11
+conda activate snackk
+pip install -r requirements.txt
 ```
 
-### Automated Verification
-A dedicated verification script is provided to test the "Perfect API" features, including simulation startup and anomaly injection.
+**Seed Local Database:**
 ```bash
-# Ensure the backend is running, then execute:
-python3 scripts/verify_api.py
+python -m data_pipeline.data_loader
 ```
-This script will programmatically start the simulation, monitor vessel population, and verify that velocity modifiers are correctly applied in real-time.
+
+**1. Run Backend Server**
+```bash
+python -m backend.main
+```
+
+**2. Run Frontend Server**
+```bash
+cd frontend
+npm install
+npm run dev
+```

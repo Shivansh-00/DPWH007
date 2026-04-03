@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  mongo:
+    image: mongo:6.0
+    container_name: docking_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017" # Exposed so GUI tools (like Compass) can inspect it
+    volumes:
+      - mongodb_data:/data/db
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: docking_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017/
+      - MONGODB_DB=smart_docking_sim
+    depends_on:
+      - mongo
+    # Allow data loader to read raw CSV if mounted
+    volumes:
+      - ./data:/app/data
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    container_name: docking_frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80" # Map internal Nginx port 80 to 5173 on Host
+    depends_on:
+      - backend
+
+volumes:
+  mongodb_data:
+    name: docking_mongodb_data
