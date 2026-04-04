@@ -1,11 +1,22 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import asyncio
 import json
+import os
+import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from bson import ObjectId
+from dotenv import load_dotenv
 from backend.models.database import db
+from backend.api.simulation import sim_controller
+
+# Resolve .env from project root (2 levels up from this file)
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+load_dotenv(dotenv_path=_env_path, override=True)
 
 router = APIRouter()
 executor = ThreadPoolExecutor(max_workers=5)
@@ -21,8 +32,17 @@ class ChatRequest(BaseModel):
     stream: bool = False
 
 
-OLLAMA_API_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "gemma4:e2b"
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
+MODEL_NAME = os.getenv("OLLAMA_MODEL", "llama-3.1-8b-instant")
+
+print(f"[LLM Config] URL={OLLAMA_API_URL}  Model={MODEL_NAME}  Key={'set (' + OLLAMA_API_KEY[:8] + '...)' if OLLAMA_API_KEY else 'MISSING'}")
+
+# Build a requests session with automatic retries for connection resets
+_http_session = requests.Session()
+_retry = Retry(total=3, backoff_factor=1, allowed_methods=["POST"],
+               status_forcelist=[429, 500, 502, 503, 504])
+_http_session.mount("https://", HTTPAdapter(max_retries=_retry))
 
 
 def _serialize_doc(doc: dict) -> dict:
@@ -55,8 +75,8 @@ def get_mongodb_context() -> str:
             total_count = collection.estimated_document_count()
             context_parts.append(f"--- Collection: {coll_name} (Total documents: {total_count}) ---")
 
-            # Get sample documents (up to 10) to show data structure and content
-            sample_docs = list(collection.find().sort("_id", -1).limit(10))
+            # Get sample documents (up to 3) to keep prompt within token limits
+            sample_docs = list(collection.find().sort("_id", -1).limit(3))
             if sample_docs:
                 serialized = [_serialize_doc(doc) for doc in sample_docs]
                 context_parts.append(f"Sample records (latest {len(serialized)}):")
@@ -85,17 +105,108 @@ def get_collection_stats() -> str:
         return f"Error: {str(e)}"
 
 
+def get_live_simulation_context() -> str:
+    """Build a snapshot of the live simulation state for the LLM."""
+    if not sim_controller.is_running and not sim_controller.is_paused:
+        return ""
+
+    parts = []
+    parts.append("=== LIVE SIMULATION STATE ===")
+    clock_min = sim_controller.global_clock_ms / 60000
+    parts.append(f"Simulation clock: {clock_min:.1f} virtual minutes elapsed")
+    parts.append(f"Status: {'PAUSED' if sim_controller.is_paused else 'RUNNING'} at {sim_controller.playback_speed}x speed")
+    parts.append(f"Anomaly mode: {sim_controller.anomaly_mode}")
+
+    # Ship summary by zone
+    zone_counts = {}
+    for s in sim_controller.ships:
+        z = s.zone.value
+        zone_counts[z] = zone_counts.get(z, 0) + 1
+    parts.append(f"\nShips by zone: {json.dumps(zone_counts)}")
+    parts.append(f"Total ships: {len(sim_controller.ships)}")
+
+    # Per-ship details (compact)
+    parts.append("\nShip details:")
+    for s in sim_controller.ships:
+        line = (f"  {s.name or 'Ship-'+str(s.ship_id)} | zone={s.zone.value} | type={s.ship_type.value} "
+                f"| score={s.priority_score:.3f} | fuel_crit={s.fuel_criticality:.2f} "
+                f"| eta={s.eta_minutes:.0f}min | berth={s.assigned_berth_id or 'none'}")
+        parts.append(line)
+
+    # Berth status
+    occupied = [b for b in sim_controller.berths if b.status == "Occupied"]
+    free = [b for b in sim_controller.berths if b.status == "Free"]
+    parts.append(f"\nBerths: {len(occupied)} occupied, {len(free)} free (total {len(sim_controller.berths)})")
+    for b in sim_controller.berths:
+        ship_info = f"ship={b.currently_docked_ship_id}, progress={b.cargo_processed_pct:.0f}%" if b.status == "Occupied" else "empty"
+        parts.append(f"  Berth {b.berth_id} ({b.name}): {b.status} | {ship_info} | equip={b.equipment_types}")
+
+    # Metrics
+    m = sim_controller.metrics
+    parts.append(f"\nMetrics:")
+    parts.append(f"  Ships processed: {m.get('total_ships_processed', 0)}")
+    parts.append(f"  Avg waiting time: {m.get('avg_waiting_time_min', 0):.1f} min")
+    parts.append(f"  Berth utilization: {m.get('berth_utilization_pct', 0):.1f}%")
+    parts.append(f"  Throughput/hour: {m.get('throughput_per_hour', 0):.1f}")
+    parts.append(f"  Reshuffles: {m.get('total_reshuffles', 0)}")
+    parts.append(f"  Deadlocks: {m.get('total_deadlocks', 0)}")
+
+    # Recent events (last 10)
+    recent = sim_controller.events_log[-10:]
+    if recent:
+        parts.append(f"\nRecent events (last {len(recent)}):")
+        for ev in recent:
+            parts.append(f"  [{ev.timestamp_ms}ms] {ev.event_type}: ship={ev.ship_id} {ev.details}")
+
+    return "\n".join(parts)
+
+
 def sync_ollama_call(prompt: str, stream: bool = False):
+    if not OLLAMA_API_KEY:
+        raise HTTPException(status_code=500, detail="Ollama API key is missing. Set OLLAMA_API_KEY.")
+
     payload = {
         "model": MODEL_NAME,
-        "prompt": prompt,
-        "stream": stream
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a smart database assistant. Answer accurately using provided context."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.2,
+        "stream": stream,
     }
+    headers = {
+        "Authorization": f"Bearer {OLLAMA_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
     try:
-        response = requests.post(OLLAMA_API_URL, json=payload, timeout=60)
+        response = _http_session.post(OLLAMA_API_URL, json=payload, headers=headers, timeout=60)
+        if response.status_code != 200:
+            body = response.text[:500]
+            print(f"[LLM ERROR] HTTP {response.status_code}: {body}")
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+
+        # OpenAI-compatible responses
+        if isinstance(data, dict) and data.get("choices"):
+            first = data["choices"][0]
+            message = first.get("message", {})
+            content = message.get("content", "")
+            return {"response": content}
+
+        # Fallback for alternate payload formats
+        if isinstance(data, dict) and "response" in data:
+            return {"response": data.get("response", "")}
+
+        return {"response": str(data)}
     except requests.exceptions.RequestException as e:
+        print(f"[LLM ERROR] Request failed: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Ollama request failed: {str(e)}")
 
 
@@ -113,13 +224,13 @@ def build_db_fallback_reply(user_message: str, mongo_context: str) -> str:
             preview = "No data preview available."
 
         return (
-            "I can access your MongoDB data, but Ollama is not running, so advanced AI generation is unavailable right now.\n\n"
+            "I can access your MongoDB data, but the Ollama API request failed, so advanced AI generation is unavailable right now.\n\n"
             f"Your question: {user_message}\n\n"
             "Current database summary:\n"
             f"{summary_text}\n\n"
             "Data preview:\n"
             f"{preview}\n\n"
-            "To enable full AI answers, start Ollama and load model 'gemma4:e2b'."
+            "To enable full AI answers, verify OLLAMA_API_KEY, OLLAMA_API_URL, and OLLAMA_MODEL."
         )
     except Exception as e:
         return (
@@ -139,22 +250,36 @@ async def generate_text(request: GenerateRequest):
 
 @router.post("/chat")
 async def chat_with_db(request: ChatRequest):
-    """Chat endpoint that includes MongoDB data as context for the LLM."""
+    """Chat endpoint that includes MongoDB data + live simulation state as context for the LLM."""
     loop = asyncio.get_event_loop()
 
     # Fetch MongoDB context in a thread to avoid blocking
     mongo_context = await loop.run_in_executor(executor, get_mongodb_context)
 
-    prompt = f"""You are a smart database assistant connected to a MongoDB database.
-Your job is to answer the user's questions based ONLY on the actual data provided below from the database.
+    # Fetch live simulation snapshot (synchronous, no I/O)
+    live_context = get_live_simulation_context()
+
+    sim_section = ""
+    if live_context:
+        sim_section = f"""
+
+[LIVE SIMULATION DATA]:
+{live_context}
+"""
+
+    prompt = f"""You are a smart port operations assistant connected to a MongoDB database AND a live ship-docking simulation.
+Your job is to answer the user's questions based on the actual data provided below.
+When a simulation is running, prioritize live simulation data for questions about current ship positions,
+berth occupancy, queue status, metrics, and real-time operations.
+Use the database content for historical records and configuration data.
 Be accurate, concise, and helpful. If the data does not contain the answer, say so.
 
 [DATABASE CONTENT]:
 {mongo_context}
-
+{sim_section}
 [USER QUESTION]: {request.message}
 
-Answer based on the database content above:"""
+Answer based on the data above:"""
 
     try:
         response_data = await loop.run_in_executor(
