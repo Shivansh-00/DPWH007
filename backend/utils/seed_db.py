@@ -2,15 +2,28 @@ import os
 import sys
 
 def seed_if_empty():
-    """Check if the DB has AIS data. If not, trigger the data_loader pipeline."""
-    from backend.models.database import raw_data_collection
-    
-    count = raw_data_collection.estimated_document_count()
-    if count > 0:
-        print(f"[Seed] Database already contains {count} records. Skipping seed.")
+    """Seed only when database is truly empty and CSV source exists."""
+    from backend.models.database import db
+
+    # If the user already has any data in this DB, do not run preload.
+    has_any_data = False
+    for collection_name in db.list_collection_names():
+        if db[collection_name].estimated_document_count() > 0:
+            has_any_data = True
+            break
+
+    if has_any_data:
+        print("[Seed] Database already has data. Skipping preload.")
         return
-        
-    print("[Seed] Database is empty! Initiating data preload...")
+
+    csv_path = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "data", "ais_raw.csv")
+    )
+    if not os.path.exists(csv_path):
+        print(f"[Seed] CSV not found at {csv_path}. Skipping preload.")
+        return
+
+    print("[Seed] Database is empty. Initiating data preload...")
     try:
         from data_pipeline.data_loader import run_pipeline
         run_pipeline()

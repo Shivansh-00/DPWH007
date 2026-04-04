@@ -4,3 +4,6 @@ pymongo
 websockets
 python-dotenv
 pydantic
+requests
+pandas
+scikit-learn

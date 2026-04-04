@@ -256,6 +256,25 @@ class ScenarioGenerator:
 
         return berths
 
+    def generate_default_ships(self, count: int = 20) -> List[Ship]:
+        """Generate a balanced default fleet when no AIS playback data is available."""
+        self._reset_rng(sub_seed=450)
+        ships: List[Ship] = []
+
+        ship_types = list(ShipType)
+        for i in range(count):
+            st = ship_types[i % len(ship_types)]
+            ship = self._generate_ship(
+                ship_id=5000 + i,
+                ship_type=st,
+                zone=ShipZone.APPROACHING,
+                distance_to_boundary=self._rng.uniform(20, 180),
+                eta_minutes=self._rng.uniform(5, 90),
+            )
+            ships.append(ship)
+
+        return ships
+
     def load_ais_playback(self, ship_count: int = 20):
         """
         Load a realistic mix of ships from MongoDB and build a playback buffer.

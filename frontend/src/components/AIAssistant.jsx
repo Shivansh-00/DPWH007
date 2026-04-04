@@ -7,7 +7,7 @@ function AIAssistant({ ships, metrics, anomalyMode, weatherActive }) {
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState('');
   const [history, setHistory] = useState([
-    { role: 'assistant', text: "Hello! I'm your Docking Intelligence AI. Ask me anything about the simulation status, queue, or metrics." }
+    { role: 'assistant', text: "Hello! I'm your Docking Intelligence AI connected to MongoDB. Ask me anything about the port data, ships, berths, or simulation records." }
   ]);
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef(null);
@@ -31,30 +31,11 @@ function AIAssistant({ ships, metrics, anomalyMode, weatherActive }) {
     setHistory((prev) => [...prev, { role: 'user', text: userMsg }]);
     setLoading(true);
 
-    // Build miniature context so the AI knows what's going on
-    const waitingShips = ships.filter(s => s.zone === 'WAITING' || s.zone === 'CLEARED_TO_ENTER');
-    const waitingCount = waitingShips.length;
-    const criticalShips = waitingShips.filter(s => s.fuel_criticality > 0.8).length;
-    const avgWait = metrics?.average_wait_time?.toFixed(2) || '0.00';
-    const effScore = metrics?.efficiency_score?.toFixed(2) || '0.00';
-
-    const promptWithContext = `You are a Smart Docking AI assistant.
-[Current Simulation State]:
-- Queue: ${waitingCount} ships waiting.
-- Critical Fuel: ${criticalShips} ships.
-- Avg Wait Time: ${avgWait}m.
-- Efficiency Score: ${effScore}.
-- Traffic Mode: ${anomalyMode || 'NORMAL'}.
-- Weather: ${weatherActive ? 'Severe Storm' : 'Clear Skies'}.
-
-User Query: ${userMsg}
-Give a concise, helpful response.`;
-
     try {
-      const res = await fetch(`${API_BASE}/api/llm/generate`, {
+      const res = await fetch(`${API_BASE}/api/llm/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: promptWithContext, stream: false }),
+        body: JSON.stringify({ message: userMsg, stream: false }),
       });
 
       if (!res.ok) {
@@ -68,7 +49,7 @@ Give a concise, helpful response.`;
       console.error(err);
       setHistory((prev) => [
         ...prev,
-        { role: 'assistant', text: "Error connecting to Intelligence Engine. Ensure Ollama and the server are running." },
+        { role: 'assistant', text: "Error connecting to Intelligence Engine. Ensure Ollama, MongoDB, and the server are running." },
       ]);
     } finally {
       setLoading(false);

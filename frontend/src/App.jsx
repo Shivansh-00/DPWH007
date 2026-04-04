@@ -7,8 +7,8 @@ import AIAssistant from './components/AIAssistant';
 import AnomalyPanel from './components/AnomalyPanel';
 import './App.css';
 
-const API_BASE = 'http://127.0.0.1:8000';
-const WS_URL = 'ws://127.0.0.1:8000/ws/simulation';
+const API_BASE = 'http://localhost:8000';
+const WS_URL = 'ws://localhost:8000/ws/simulation';
 
 function App() {
   const [screen, setScreen] = useState('setup'); // 'setup' | 'simulation'
