@@ -5,7 +5,7 @@ import os
 MONGO_URL = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
 client = MongoClient(MONGO_URL)
 
-DB_NAME = os.getenv("MONGODB_DB", "smart_docking_sim")
+DB_NAME = os.getenv("MONGODB_DB", "port_db")
 db = client[DB_NAME]
 
 # Specific Time-series / state collections
